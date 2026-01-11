@@ -1,0 +1,187 @@
+# JacalDB — set of varius DB tools
+
+
+## 🧩 HashJoin — SQL-like two CSV Join Tool in Rust
+
+**HashJoin** is a command-line utility written in Rust that allows you to perform SQL-like queries to join two CSV files on their first column (the key). It supports multiple join types, execution strategies, and flexible output handling.
+
+---
+
+### ✨ Features
+
+- **Join Types**: `INNER`, `LEFT`, `RIGHT`, `FULL`
+- **Execution Strategies**:
+  - `in_memory` — loads both files entirely into RAM (best for small datasets)
+  - `only_smallest` — loads only the smaller file into memory (memory-efficient, currently `INNER JOIN` only)
+- **Column Projection**: `SELECT col1, col2` or `SELECT *`
+- **Flexible Output**:
+  - To **stdout**: `> `
+  - To a **directory**: `> test/` → saves as `test/result.csv`
+  - To a **file**: `> output.csv` or `> /absolute/path/result.csv`
+- **Path Support**: relative (`test/file.csv`) and absolute (`/var/data.csv`) paths
+
+---
+
+### 📦 Installation
+
+Requires [Rust](https://www.rust-lang.org/tools/install) (version 1.70+).
+
+```bash
+git clone https://github.com/yourname/hashjoin.git
+cd hashjoin
+cargo build --release
+```
+
+The executable will be located at `target/release/hashjoin`.
+
+---
+
+### 🚀 Quick Start
+
+#### 1. Prepare your data
+
+Sample CSV files are included in the `test/` directory:
+
+```csv
+# test/employees.csv
+id,name,dept
+1,Alice,Eng
+2,Bob,HR
+3,Charlie,Eng
+```
+
+```csv
+# test/salaries.csv
+id,salary
+1,70000
+3,65000
+4,80000
+```
+
+#### 2. Run a query
+
+```bash
+# Join with output to stdout
+./target/release/hashjoin "select id, name, salary from test/employees.csv, test/salaries.csv hashjoin inner in_memory > "
+```
+
+Output:
+```
+id,name,salary
+1,Alice,70000
+3,Charlie,65000
+```
+
+```bash
+# Save result to a file
+./target/release/hashjoin "select * from test/employees.csv, test/salaries.csv hashjoin left in_memory > result.csv"
+```
+
+---
+
+### 📝 Query Syntax
+
+```sql
+select <columns> from <file1>, <file2> hashjoin <type> [strategy] > [output]
+```
+
+#### Parameters
+
+| Part | Description | Examples |
+|------|-------------|--------|
+| `<columns>` | Column list or `*` | `id, name`, `*` |
+| `<file1>, <file2>` | Paths to CSV files | `test/a.csv, /tmp/b.csv` |
+| `<type>` | Join type | `inner`, `left`, `full` |
+| `[strategy]` | Execution strategy | `in_memory` (default if omitted: `only_smallest`) |
+| `> [output]` | Output destination | `> `, `> out/`, `> result.csv` |
+
+> 💡 If no output is specified, the result is saved to `result.csv` in the current directory.
+
+---
+
+### 🛠 Usage Examples
+
+```bash
+## Full join to stdout
+hashjoin "select * from a.csv, b.csv hashjoin full in_memory > "
+
+## Select specific columns to a file
+hashjoin "select id, name from x.csv, y.csv hashjoin left in_memory > output.csv"
+
+## Use absolute paths
+hashjoin "select * from /data/users.csv, /data/orders.csv hashjoin inner in_memory > /reports/join_result.csv"
+
+## Output to subdirectory
+hashjoin "select * from test/1.csv, test/2.csv hashjoin inner in_memory > test/results/"
+```
+
+---
+
+### 🏗 Architecture
+
+The project follows an object-oriented design with clean separation of concerns:
+
+- **Strategy Pattern** — for join algorithms (`InMemoryJoin`, `OnlySmallestJoin`)
+- **Command/AST** — query representation
+- **Single Responsibility** — each module has one clear purpose
+
+Project structure:
+```
+src/
+├── query/      # Parsing and AST
+├── hashjoin/   # Join logic and strategies
+└── storage/    # Data reading abstraction
+```
+
+---
+
+### ⚠️ Limitations
+
+- `only_smallest` and `stream_processing` support **only `INNER JOIN`** and **do not work with `SELECT *`**
+- Not suitable for datasets larger than available RAM (unless using future disk-based strategies)
+- Column names are case-sensitive
+
+---
+
+### 🧪 Testing
+
+Try the built-in example:
+
+```bash
+cargo run "select * from test/employees.csv, test/salaries.csv hashjoin inner in_memory > test_output.csv"
+cat test_output.csv
+```
+
+Expected output:
+```csv
+id,name,dept,salary
+1,Alice,Eng,70000
+3,Charlie,Eng,65000
+```
+
+### 💡 Future Improvements
+
+- Full implementation of `only_smallest` for all join types
+- Support for `WHERE`, `ORDER BY`, and aggregation
+- Integration with **Polars** or **Arrow** for large-scale data processing
+- Support for additional formats (JSON, Parquet)
+
+## 📄 License
+
+Copyright 2026 Grigory Koval
+
+Licensed under the **Apache License, Version 2.0** (the "License");  
+you may not use this file except in compliance with the License.  
+You may obtain a copy of the License at
+
+  [http://www.apache.org/licenses/LICENSE-2.0](http://www.apache.org/licenses/LICENSE-2.0)
+
+Unless required by applicable law or agreed to in writing, software  
+distributed under the License is distributed on an "AS IS" BASIS,  
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.  
+See the License for the specific language governing permissions and  
+limitations under the License.
+
+---
+Built with ❤️ in Rust.  
+Contributions and feedback welcome!
