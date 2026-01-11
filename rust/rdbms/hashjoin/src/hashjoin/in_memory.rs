@@ -1,12 +1,14 @@
 use std::collections::{HashMap, HashSet};
 use std::error::Error;
 use std::io::Write;
+use std::time::Instant;
 
-use csv::Writer;
+use csv::{Writer};
+
+use tracing::{debug, info};
 
 use crate::query::ast::SelectQuery;
 use crate::hashjoin::strategy::JoinStrategy;
-use crate::hashjoin::strategy::JoinType;
 use crate::storage::csv_reader::read_csv_to_map;
 
 fn build_column_index(headers1: &[String], headers2: &[String]) -> HashMap<String, usize> {
@@ -16,7 +18,9 @@ fn build_column_index(headers1: &[String], headers2: &[String]) -> HashMap<Strin
     }
     let offset = headers1.len();
     for (i, col) in headers2.iter().enumerate() {
-        if i == 0 { continue; }
+        if i == 0 {
+            continue;
+        }
         map.entry(col.clone()).or_insert(offset + i - 1);
     }
     map
@@ -30,8 +34,29 @@ impl JoinStrategy for InMemoryJoin {
         query: &SelectQuery,
         writer: &mut dyn Write,
     ) -> Result<(), Box<dyn Error>> {
+        let _span = tracing::debug_span!("in_memory_join").entered();
+
+        debug!("Reading first CSV file: {}", query.file1);
+        let read1_start = Instant::now();
         let (headers1, map1) = read_csv_to_map(&query.file1)?;
+        let read1_duration = read1_start.elapsed();
+        info!(
+            file = %query.file1,
+            rows = %map1.len(),
+            duration_ms = %read1_duration.as_millis(),
+            "First file loaded"
+        );
+
+        debug!("Reading second CSV file: {}", query.file2);
+        let read2_start = Instant::now();
         let (headers2, map2) = read_csv_to_map(&query.file2)?;
+        let read2_duration = read2_start.elapsed();
+        info!(
+            file = %query.file2,
+            rows = %map2.len(),
+            duration_ms = %read2_duration.as_millis(),
+            "Second file loaded"
+        );
 
         let full_headers: Vec<String> = {
             let mut h = headers1.clone();
@@ -45,7 +70,7 @@ impl JoinStrategy for InMemoryJoin {
             let col_index = build_column_index(&headers1, &headers2);
             for col in &query.columns {
                 if !col_index.contains_key(col) {
-                    return Err(format!("Неизвестная колонка: '{}'", col).into());
+                    return Err(format!("Unknown column: '{}'", col).into());
                 }
             }
             query.columns.clone()
@@ -56,29 +81,36 @@ impl JoinStrategy for InMemoryJoin {
         wtr.write_record(&selected_columns)?;
 
         let all_keys: Vec<String> = match query.join_type {
-            JoinType::Inner => map1.keys().filter(|k| map2.contains_key(*k)).cloned().collect(),
-            JoinType::Left => map1.keys().cloned().collect(),
-            JoinType::Right => map2.keys().cloned().collect(),
-            JoinType::Full => {
+            crate::hashjoin::JoinType::Inner => {
+                map1.keys().filter(|k| map2.contains_key(*k)).cloned().collect()
+            }
+            crate::hashjoin::JoinType::Left => map1.keys().cloned().collect(),
+            crate::hashjoin::JoinType::Right => map2.keys().cloned().collect(),
+            crate::hashjoin::JoinType::Full => {
                 let mut keys: HashSet<String> = map1.keys().cloned().collect();
                 keys.extend(map2.keys().cloned());
                 keys.into_iter().collect()
             }
         };
 
+        let join_start = Instant::now();
+        let mut output_row_count = 0;
+
         for key in all_keys {
             let row1 = map1.get(&key);
             let row2 = map2.get(&key);
 
             let full_row: Vec<String> = match query.join_type {
-                JoinType::Inner => {
+                crate::hashjoin::JoinType::Inner => {
                     if let (Some(r1), Some(r2)) = (row1, row2) {
                         let mut out = r1.clone();
                         out.extend_from_slice(&r2[1..]);
                         out
-                    } else { continue; }
+                    } else {
+                        continue;
+                    }
                 }
-                JoinType::Left => {
+                crate::hashjoin::JoinType::Left => {
                     if let Some(r1) = row1 {
                         let mut out = r1.clone();
                         if let Some(r2) = row2 {
@@ -87,9 +119,11 @@ impl JoinStrategy for InMemoryJoin {
                             out.extend(vec!["".to_string(); headers2.len() - 1]);
                         }
                         out
-                    } else { continue; }
+                    } else {
+                        continue;
+                    }
                 }
-                JoinType::Right => {
+                crate::hashjoin::JoinType::Right => {
                     if let Some(r2) = row2 {
                         let mut out = if let Some(r1) = row1 {
                             r1.clone()
@@ -98,9 +132,11 @@ impl JoinStrategy for InMemoryJoin {
                         };
                         out.extend_from_slice(&r2[1..]);
                         out
-                    } else { continue; }
+                    } else {
+                        continue;
+                    }
                 }
-                JoinType::Full => {
+                crate::hashjoin::JoinType::Full => {
                     let mut out = if let Some(r1) = row1 {
                         r1.clone()
                     } else {
@@ -126,9 +162,17 @@ impl JoinStrategy for InMemoryJoin {
                 .collect();
 
             wtr.write_record(&projected_row)?;
+            output_row_count += 1;
         }
 
         wtr.flush()?;
+        let join_duration = join_start.elapsed();
+        info!(
+            output_rows = %output_row_count,
+            duration_ms = %join_duration.as_millis(),
+            "Join processing completed"
+        );
+
         Ok(())
     }
 }

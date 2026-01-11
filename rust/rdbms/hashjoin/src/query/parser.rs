@@ -1,26 +1,38 @@
 use regex::Regex;
 use std::error::Error;
+use tracing::{info, debug};
 
 use crate::query::ast::{SelectQuery, OutputTarget};
 use crate::hashjoin::strategy::parse_join_type;
 
 pub fn parse_command(command: &str) -> Result<SelectQuery, Box<dyn Error>> {
+    let _span = tracing::info_span!("parse_command").entered();
+    debug!(command = %command, "Parsing command");
+
     let cmd = command.trim();
 
-    // Регулярка: захватывает всё после ">"
+    // Надёжная регулярка с именованными группами
     let re = Regex::new(
-        r"(?i)^\s*select\s+(.+?)\s+from\s+([^,]+(?:\s*,\s*[^,]+)*)\s+hashjoin\s+(\w+)(?:\s+(\w+))?(?:\s*>\s*(.*))?\s*$"
+        r"(?ix)
+        ^\s*
+        select \s+ (?P<columns>.+?)
+        \s+ from \s+ (?P<files>[^,]+(?:\s*,\s*[^,]+)*)
+        \s+ hashjoin \s+ (?P<join_type>\w+)
+        (?: \s+ (?P<strategy>\w+) )?
+        (?: \s* > \s* (?P<output>.*) )?
+        \s*$
+        "
     )?;
 
-    let caps = re.captures(cmd).ok_or("Неподдерживаемая команда")?;
+    let caps = re.captures(cmd).ok_or("Unsupported command")?;
 
-    let columns_expr = caps.get(1).unwrap().as_str().trim();
-    let files_str = caps.get(2).unwrap().as_str();
-    let join_type_str = caps.get(3).unwrap().as_str().trim();
-    let strategy_name = caps.get(4)
+    let columns_expr = caps.name("columns").unwrap().as_str().trim();
+    let files_str = caps.name("files").unwrap().as_str();
+    let join_type_str = caps.name("join_type").unwrap().as_str().trim();
+    let strategy_name = caps.name("strategy")
         .map(|m| m.as_str().to_string())
         .unwrap_or_else(|| "only_smallest".to_string());
-    let output_expr = caps.get(5).map(|m| m.as_str().trim());
+    let output_expr = caps.name("output").map(|m| m.as_str().trim());
 
     let files: Vec<&str> = files_str
         .split(',')
@@ -28,10 +40,10 @@ pub fn parse_command(command: &str) -> Result<SelectQuery, Box<dyn Error>> {
         .collect();
 
     if files.len() != 2 {
-        return Err("Требуется ровно два CSV-файла".into());
+        return Err("Exactly two CSV files are required".into());
     }
 
-    let columns = if columns_expr == "*" {
+    let selected_columns = if columns_expr == "*" {
         vec!["*".to_string()]
     } else {
         columns_expr
@@ -40,8 +52,8 @@ pub fn parse_command(command: &str) -> Result<SelectQuery, Box<dyn Error>> {
             .collect::<Vec<_>>()
     };
 
-    if columns.is_empty() {
-        return Err("Список колонок не может быть пустым".into());
+    if selected_columns.is_empty() {
+        return Err("Column list cannot be empty".into());
     }
 
     let join_type = parse_join_type(join_type_str)?;
@@ -58,8 +70,17 @@ pub fn parse_command(command: &str) -> Result<SelectQuery, Box<dyn Error>> {
         }
     };
 
+    info!(
+        columns = ?selected_columns,
+        files = ?files,
+        join_type = %join_type_str,
+        strategy = %strategy_name,
+        output = ?output,
+        "Query parsed successfully"
+    );
+
     Ok(SelectQuery {
-        columns,
+        columns: selected_columns,
         file1: files[0].to_string(),
         file2: files[1].to_string(),
         join_type,

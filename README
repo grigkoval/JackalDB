@@ -1,4 +1,4 @@
-# JacalDB — set of varius DB tools
+# JackalDB — set of varius DB tools
 
 
 ## 🧩 HashJoin — SQL-like two CSV Join Tool in Rust
@@ -27,8 +27,8 @@
 Requires [Rust](https://www.rust-lang.org/tools/install) (version 1.70+).
 
 ```bash
-git clone https://github.com/yourname/hashjoin.git
-cd hashjoin
+git clone https://github.com/grigkoval/JecalDB.git
+cd rust/rdbms/hashjoin
 cargo build --release
 ```
 
