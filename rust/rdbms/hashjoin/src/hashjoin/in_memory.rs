@@ -3,27 +3,34 @@ use std::error::Error;
 use std::io::Write;
 use std::time::Instant;
 
-use csv::{Writer};
-
+use csv::{Writer, StringRecord};
 use tracing::{debug, info};
 
 use crate::query::ast::SelectQuery;
 use crate::hashjoin::strategy::JoinStrategy;
 use crate::storage::csv_reader::read_csv_to_map;
 
-fn build_column_index(headers1: &[String], headers2: &[String]) -> HashMap<String, usize> {
-    let mut map = HashMap::new();
-    for (i, col) in headers1.iter().enumerate() {
-        map.entry(col.clone()).or_insert(i);
-    }
-    let offset = headers1.len();
-    for (i, col) in headers2.iter().enumerate() {
-        if i == 0 {
-            continue;
+// Вспомогательная структура для эффективного доступа к данным
+struct JoinedRow<'a> {
+    left: Option<&'a StringRecord>,
+    right: Option<&'a StringRecord>,
+    left_headers_len: usize,
+}
+
+impl<'a> JoinedRow<'a> {
+    fn get(&self, index: usize) -> &str {
+        if index < self.left_headers_len {
+            self.left
+                .and_then(|r| r.get(index))
+                .unwrap_or("")
+        } else {
+            // index >= left_headers_len → колонка из правого файла (без ключа)
+            let right_index = index - self.left_headers_len + 1; // +1 потому что пропускаем ключ
+            self.right
+                .and_then(|r| r.get(right_index))
+                .unwrap_or("")
         }
-        map.entry(col.clone()).or_insert(offset + i - 1);
     }
-    map
 }
 
 pub struct InMemoryJoin;
@@ -58,28 +65,46 @@ impl JoinStrategy for InMemoryJoin {
             "Second file loaded"
         );
 
+        // Собираем полный список заголовков один раз
         let full_headers: Vec<String> = {
             let mut h = headers1.clone();
             h.extend_from_slice(&headers2[1..]);
             h
         };
 
+        // Обработка SELECT *
         let selected_columns = if query.columns.len() == 1 && query.columns[0] == "*" {
             full_headers.clone()
         } else {
-            let col_index = build_column_index(&headers1, &headers2);
-            for col in &query.columns {
+            query.columns.clone()
+        };
+
+        // Строим карту индексов один раз
+        let col_index = {
+            let mut map = HashMap::new();
+            for (i, col) in headers1.iter().enumerate() {
+                map.entry(col.clone()).or_insert(i);
+            }
+            let offset = headers1.len();
+            for (i, col) in headers2.iter().enumerate().skip(1) {
+                map.entry(col.clone()).or_insert(offset + i - 1);
+            }
+            map
+        };
+
+        // Проверяем существование колонок (если не *)
+        if !(query.columns.len() == 1 && query.columns[0] == "*") {
+            for col in &selected_columns {
                 if !col_index.contains_key(col) {
                     return Err(format!("Unknown column: '{}'", col).into());
                 }
             }
-            query.columns.clone()
-        };
+        }
 
-        let col_index_final = build_column_index(&headers1, &headers2);
         let mut wtr = Writer::from_writer(writer);
         wtr.write_record(&selected_columns)?;
 
+        // Подготовка ключей
         let all_keys: Vec<String> = match query.join_type {
             crate::hashjoin::JoinType::Inner => {
                 map1.keys().filter(|k| map2.contains_key(*k)).cloned().collect()
@@ -95,69 +120,34 @@ impl JoinStrategy for InMemoryJoin {
 
         let join_start = Instant::now();
         let mut output_row_count = 0;
+        let left_len = headers1.len();
 
         for key in all_keys {
             let row1 = map1.get(&key);
             let row2 = map2.get(&key);
 
-            let full_row: Vec<String> = match query.join_type {
-                crate::hashjoin::JoinType::Inner => {
-                    if let (Some(r1), Some(r2)) = (row1, row2) {
-                        let mut out = r1.clone();
-                        out.extend_from_slice(&r2[1..]);
-                        out
-                    } else {
-                        continue;
-                    }
-                }
-                crate::hashjoin::JoinType::Left => {
-                    if let Some(r1) = row1 {
-                        let mut out = r1.clone();
-                        if let Some(r2) = row2 {
-                            out.extend_from_slice(&r2[1..]);
-                        } else {
-                            out.extend(vec!["".to_string(); headers2.len() - 1]);
-                        }
-                        out
-                    } else {
-                        continue;
-                    }
-                }
-                crate::hashjoin::JoinType::Right => {
-                    if let Some(r2) = row2 {
-                        let mut out = if let Some(r1) = row1 {
-                            r1.clone()
-                        } else {
-                            vec!["".to_string(); headers1.len()]
-                        };
-                        out.extend_from_slice(&r2[1..]);
-                        out
-                    } else {
-                        continue;
-                    }
-                }
-                crate::hashjoin::JoinType::Full => {
-                    let mut out = if let Some(r1) = row1 {
-                        r1.clone()
-                    } else {
-                        vec!["".to_string(); headers1.len()]
-                    };
-                    if let Some(r2) = row2 {
-                        out.extend_from_slice(&r2[1..]);
-                    } else {
-                        out.extend(vec!["".to_string(); headers2.len() - 1]);
-                    }
-                    out
-                }
+            // Пропуск неподходящих строк для INNER/LEFT/RIGHT
+            match query.join_type {
+                crate::hashjoin::JoinType::Inner if row1.is_none() || row2.is_none() => continue,
+                crate::hashjoin::JoinType::Left if row1.is_none() => continue,
+                crate::hashjoin::JoinType::Right if row2.is_none() => continue,
+                _ => {}
+            }
+
+            let joined = JoinedRow {
+                left: row1,
+                right: row2,
+                left_headers_len: left_len,
             };
 
-            let projected_row: Vec<String> = selected_columns
+            // Формируем строку без клонирования значений — только ссылки
+            let projected_row: Vec<&str> = selected_columns
                 .iter()
                 .map(|col| {
-                    col_index_final
+                    col_index
                         .get(col)
-                        .and_then(|&idx| full_row.get(idx).cloned())
-                        .unwrap_or_default()
+                        .map(|&idx| joined.get(idx))
+                        .unwrap_or("")
                 })
                 .collect();
 

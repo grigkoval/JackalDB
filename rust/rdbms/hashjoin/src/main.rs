@@ -1,6 +1,7 @@
 mod query;
 mod hashjoin;
 mod storage;
+mod polars; 
 
 use query::parser::parse_command;
 use hashjoin::executor::execute_query;

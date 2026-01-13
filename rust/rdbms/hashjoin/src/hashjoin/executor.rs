@@ -8,6 +8,7 @@ use crate::query::ast::{SelectQuery, OutputTarget};
 use crate::hashjoin::strategy::JoinStrategy;
 use crate::hashjoin::in_memory::InMemoryJoin;
 use crate::hashjoin::smallest::OnlySmallestJoin;
+use crate::polars::PolarsJoin;
 
 pub fn execute_query(query: &SelectQuery) -> Result<(), Box<dyn Error>> {
     let start_time = Instant::now();
@@ -16,6 +17,7 @@ pub fn execute_query(query: &SelectQuery) -> Result<(), Box<dyn Error>> {
     info!("Initializing execution strategy");
     let strategy: Box<dyn JoinStrategy> = match query.strategy_name.to_lowercase().as_str() {
         "in_memory" => Box::new(InMemoryJoin),
+        "polars" => Box::new(PolarsJoin),
         "only_smallest" | "stream_processing" => Box::new(OnlySmallestJoin),
         "merge_join" | "disk_based" => {
             let msg = "This strategy is not implemented yet";
