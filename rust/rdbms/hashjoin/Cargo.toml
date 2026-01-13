@@ -8,3 +8,6 @@ csv = "1.4"
 regex = "1.10" 
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+polars = { version = "0.50", features = ["csv"] }
+
+
